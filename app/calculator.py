@@ -24,3 +24,9 @@ def percentage(part: float, whole: float) -> float:
     if whole == 0:
         raise ValueError("whole cannot be zero")
     return (part / whole) * 100
+
+
+def factorial(n: int) -> int:
+    if n < 0:
+        raise ValueError("factorial is undefined for negative numbers")
+    return 1 if n == 0 else n * factorial(n - 1)
