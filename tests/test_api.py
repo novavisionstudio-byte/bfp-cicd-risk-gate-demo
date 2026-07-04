@@ -24,3 +24,9 @@ def test_divide_endpoint(client):
 def test_divide_by_zero_endpoint(client):
     r = client.post("/divide", json={"a": 1, "b": 0})
     assert r.status_code == 400
+
+
+def test_factorial_endpoint(client):
+    r = client.post("/factorial", json={"n": 5})
+    assert r.status_code == 200
+    assert r.get_json()["result"] == 120

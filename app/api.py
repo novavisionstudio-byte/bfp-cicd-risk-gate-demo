@@ -33,5 +33,14 @@ def divide():
         return jsonify(error=str(e)), 400
 
 
+@app.post("/factorial")
+def factorial():
+    d = request.get_json()
+    try:
+        return jsonify(result=calc.factorial(d["n"]))
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+
+
 if __name__ == "__main__":
     app.run(debug=True)
