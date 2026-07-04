@@ -1,0 +1,83 @@
+name: CI/CD Risk Gate
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  risk-gate:
+    name: Risk Gate (processing + explainability layers)
+    runs-on: ubuntu-latest
+    outputs:
+      decision: ${{ steps.gate.outputs.decision }}
+      probability: ${{ steps.gate.outputs.probability }}
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install risk-gate dependencies
+        run: pip install -r ci_gate/requirements.txt
+
+      - name: Resolve prev/current commit SHAs
+        id: shas
+        run: |
+          CURR="${{ github.sha }}"
+          EMPTY_TREE=$(git hash-object -t tree /dev/null)
+          BEFORE="${{ github.event.before }}"
+          if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+             && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            PREV="$BEFORE"
+          else
+            # first commit ever, OR github.event.before points at a commit no longer
+            # reachable in this checkout (e.g. after a force-push/history rewrite) --
+            # fall back to comparing against the empty tree instead of failing.
+            PREV="$EMPTY_TREE"
+          fi
+          echo "prev=$PREV" >> "$GITHUB_OUTPUT"
+          echo "curr=$CURR" >> "$GITHUB_OUTPUT"
+
+      - name: Extract live pre-build features
+        run: >
+          python ci_gate/extract_features.py
+          ${{ steps.shas.outputs.prev }} ${{ steps.shas.outputs.curr }} risk-gate.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Score with the trained model (processing + explainability layers)
+        id: gate
+        run: python ci_gate/predict.py risk_gate_features.json
+
+      - name: Upload risk-gate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: risk-gate-report
+          path: |
+            risk_gate_features.json
+            risk_gate_result.json
+
+  test:
+    name: Test suite (runs only if the gate did not ROLLBACK)
+    needs: risk-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install app dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run test suite
+        run: python -m pytest -q
