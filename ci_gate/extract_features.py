@@ -172,12 +172,30 @@ def _gh_api(path: str) -> dict | list:
 def history_features(workflow_file: str) -> dict:
     """hist_* : derived from this repo's OWN past GitHub Actions run conclusions,
     strictly prior runs only (the current, in-progress run is excluded by construction
-    -- it has no conclusion yet when this script executes). Same shift-by-one
-    semantics as bfp/data.py's add_history(), just computed against live API data
-    instead of a static CSV."""
+    -- it has no conclusion yet when this script executes). Mirrors bfp/data.py's
+    add_history() semantics EXACTLY, computed against live API data instead of a
+    static CSV:
+      - zero prior runs -> hist_prev_status / hist_fail_rate_* are None (JSON null ->
+        NaN -> the saved preprocessor median-imputes, identical to offline shift(1)
+        NaN on a project's first build);
+      - hist_consec_fail / hist_build_seq are 0.0 on the first build (offline uses
+        fillna(0) / cumcount, NOT NaN, for these two);
+      - >=1 prior run: rolling windows use min_periods=1 offline, i.e. the mean over
+        however many priors exist (up to the window size) -- same as computed here.
+    The run-history fetch is PAGINATED so hist_fail_rate_all reflects the full
+    history, not just the most recent API page."""
+    items = []
     try:
-        runs = _gh_api(f"/actions/workflows/{workflow_file}/runs?per_page=100&status=completed")
-        items = sorted(runs.get("workflow_runs", []), key=lambda r: r["run_started_at"])
+        page = 1
+        while True:
+            runs = _gh_api(f"/actions/workflows/{workflow_file}/runs"
+                           f"?per_page=100&status=completed&page={page}")
+            batch = runs.get("workflow_runs", [])
+            items.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+        items.sort(key=lambda r: r["run_started_at"])
     except Exception as e:
         print(f"WARNING: could not fetch run history ({e}); treating as first build", file=sys.stderr)
         items = []
@@ -185,8 +203,12 @@ def history_features(workflow_file: str) -> dict:
     outcomes = [0 if r["conclusion"] == "success" else 1 for r in items]
 
     def fail_rate(window):
+        # offline: shift(1).rolling(window, min_periods=1).mean() / expanding().mean()
+        # -> None (NaN -> median-impute) when there are no priors at all
+        if not outcomes:
+            return None
         seq = outcomes if window is None else outcomes[-window:]
-        return (sum(seq) / len(seq)) if seq else 0.0
+        return sum(seq) / len(seq)
 
     consec = 0
     for o in reversed(outcomes):
@@ -196,12 +218,12 @@ def history_features(workflow_file: str) -> dict:
             break
 
     return {
-        "hist_prev_status": float(outcomes[-1]) if outcomes else 0.0,
+        "hist_prev_status": float(outcomes[-1]) if outcomes else None,
         "hist_fail_rate_5": fail_rate(5),
         "hist_fail_rate_20": fail_rate(20),
         "hist_fail_rate_all": fail_rate(None),
-        "hist_consec_fail": float(consec),
-        "hist_build_seq": float(len(outcomes)),
+        "hist_consec_fail": float(consec),   # offline fillna(0): 0.0 on first build
+        "hist_build_seq": float(len(outcomes)),  # offline cumcount: 0.0 on first build
         "_n_prior_runs": len(outcomes),  # for logging only, not a model feature
     }
 
